@@ -16,3 +16,4 @@ A simple Internet Relay Chat client command line interface made in Odin
 
 # Resources
 - [IETF RFC 1459 Document](https://datatracker.ietf.org/doc/html/rfc1459#section-2)
+- [IRC server for development](https://github.com/ergochat/ergo)
