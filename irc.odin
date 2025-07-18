@@ -220,7 +220,7 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 	defer runtime.default_temp_allocator_destroy(auto_cast context.temp_allocator.data)
 
 	// TODO(XENOBAS): Accept destination of connection
-	chan.send(chan_res, "[DEBUG:IRC] Intializing...")
+	chan.send(chan_res, Response_Debug{ .Debug, fmt.tprintf("Begin initialisation") })
 
 	// ircs://irc.hackint.org:6697/odin
 	// ircs IRC Secure, 65.108.220.207 ip, 6697 port, odin channel
@@ -236,15 +236,15 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 		return
 	}
 	defer irc_cleanup(&conn)
-	chan.send(chan_res, "[DEBUG:IRC] Dialed remote host successfully")
+	chan.send(chan_res, Response_Debug{ .Debug, fmt.tprintf("Dialed remote host successfully") })
 
 	err = irc_connect(&conn, "XENOBAS")
 	if err != nil {
 		// mesg := fmt.tprintf("[DEBUG:IRC] Failed during connection because of: %v", err)
-		chan.send(chan_res, "[DEBUG:IRC] Failed during connect")
+		chan.send(chan_res, Response_Debug{ .Fatal, fmt.tprintf("Failed during user connection: %v", err) })
 		return
 	}
-	chan.send(chan_res, "[DEBUG:IRC] Connected successfully")
+	chan.send(chan_res, Response_Debug{ .Info, fmt.tprintf("Connected successfully") })
 
 	BUFFSZ :: mem.Kilobyte
 	ATTEMPTS :: 64
@@ -317,5 +317,5 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 			}
 		}
 	}
-	chan.send(chan_res, "[DEBUG:IRC] thread done")
+	chan.send(chan_res, Response_Debug{ .Debug, fmt.tprintf("End of thread") })
 }
