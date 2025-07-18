@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:mem"
 import "core:time"
+import "base:runtime"
 import "core:strings"
 import termcl "termcl"
 import "core:sync/chan"
@@ -104,6 +105,7 @@ ui_routine :: proc(chan_req: chan.Chan(string, .Send), chan_res: chan.Chan(Respo
 		}
 		context.allocator = mem.tracking_allocator(&track)
 	}
+	defer runtime.default_temp_allocator_destroy(auto_cast context.temp_allocator.data)
 
 	screen := termcl.init_screen()
 	defer termcl.destroy_screen(&screen)

@@ -288,8 +288,7 @@ parse :: proc(msg: string) -> (cmd: IRC_Command, ok: bool) {
 	if read_letter(&reader, ' ') {
 		if cmd.params_count == 14 do read_letter(&reader, ':')
 		else do read_letter(&reader, ':') or_return
-		read_trailing(&reader) or_return
-		cmd.params[cmd.params_count] = reader.capture
+		if read_trailing(&reader) do cmd.params[cmd.params_count] = reader.capture
 		cmd.params_count += 1
 	}
 	return cmd, len(reader.source[reader.index:]) == 0
@@ -307,22 +306,23 @@ test_parse :: proc(t: ^testing.T) {
 	}
 	cases := []Case{
 		{ true, ":NickServ!NickServ@services.hackint.org NOTICE XENOBAS1 :\r\n", { } },
-		// { true, ":UserTest03!~usertest0@105.157.179.151 PRIVMSG XENOBAS1 :Does this work ?\r\n", { { "nickname", "UserTest03" } } },
-		// { true, ":UserTest03!~usertest0@105.157.179.151 PRIVMSG XENOBAS1 :Now it should appear\r\n", { { "nickname", "UserTest03" }, { "user", "~usertest0" }, { "host", "105.157.179.151" }, { "name", "PRIVMSG" }, { "params[0]", "XENOBAS1" }, { "params[1]", "Now it should appear" } } },
-		// { true, ":palermo.hackint.org NOTICE * :*** Checking Ident\r\n", { { "servername", "palermo.hackint.org" }, { "name", "NOTICE" }, { "params[0]", "*" }, { "params[1]", "*** Checking Ident" } } },
-		// { true, ":palermo.hackint.org NOTICE * :*** Looking up your hostname...\r\n", { { "servername", "palermo.hackint.org" }, { "name", "NOTICE" }, { "params[0]", "*" }, { "params[1]", "*** Looking up your hostname..." } } },
-		// { true, ":palermo.hackint.org NOTICE * :*** Couldn't look up your hostname\r\n", { { "servername", "palermo.hackint.org" }, { "name", "NOTICE" }, { "params[0]", "*" }, { "params[1]", "*** Couldn't look up your hostname" } } },
-		// { true, ":palermo.hackint.org NOTICE * :*** No Ident response\r\n", { { "servername", "palermo.hackint.org" }, { "name", "NOTICE" }, { "params[0]", "*" }, { "params[1]", "*** No Ident response" } } },
-		// { true, "PING :833A4B49\r\n", { { "name", "PING" }, { "params[0]", "833A4B49" } } },
+		{ true, ":palermo.hackint.org 322 XENOBAS #zwj 3 :\r\n", { } },
+		{ true, ":UserTest03!~usertest0@105.157.179.151 PRIVMSG XENOBAS1 :Does this work ?\r\n", { { "nickname", "UserTest03" } } },
+		{ true, ":UserTest03!~usertest0@105.157.179.151 PRIVMSG XENOBAS1 :Now it should appear\r\n", { { "nickname", "UserTest03" }, { "user", "~usertest0" }, { "host", "105.157.179.151" }, { "name", "PRIVMSG" }, { "params[0]", "XENOBAS1" }, { "params[1]", "Now it should appear" } } },
+		{ true, ":palermo.hackint.org NOTICE * :*** Checking Ident\r\n", { { "servername", "palermo.hackint.org" }, { "name", "NOTICE" }, { "params[0]", "*" }, { "params[1]", "*** Checking Ident" } } },
+		{ true, ":palermo.hackint.org NOTICE * :*** Looking up your hostname...\r\n", { { "servername", "palermo.hackint.org" }, { "name", "NOTICE" }, { "params[0]", "*" }, { "params[1]", "*** Looking up your hostname..." } } },
+		{ true, ":palermo.hackint.org NOTICE * :*** Couldn't look up your hostname\r\n", { { "servername", "palermo.hackint.org" }, { "name", "NOTICE" }, { "params[0]", "*" }, { "params[1]", "*** Couldn't look up your hostname" } } },
+		{ true, ":palermo.hackint.org NOTICE * :*** No Ident response\r\n", { { "servername", "palermo.hackint.org" }, { "name", "NOTICE" }, { "params[0]", "*" }, { "params[1]", "*** No Ident response" } } },
+		{ true, "PING :833A4B49\r\n", { { "name", "PING" }, { "params[0]", "833A4B49" } } },
 
-		// { false, "\r\n", { } },
-		// { true, "QUIT\r\n", { { "name", "QUIT" } } },
-		// { true, ":www.google.com QUIT\r\n", { { "name", "QUIT" }, { "servername", "www.google.com" } } },
-		// { true, "QUIT Bye\r\n", { { "name", "QUIT" }, { "params_count", 1 }, { "params[0]", "Bye" } } },
-		// { true, "QUIT 1 2 3 :4 5: 6\r\n", { { "name", "QUIT" }, { "params_count", 4 }, { "params[0]", "1" }, { "params[1]", "2" }, { "params[2]", "3" }, { "params[3]", "4 5: 6" } } },
+		{ false, "\r\n", { } },
+		{ true, "QUIT\r\n", { { "name", "QUIT" } } },
+		{ true, ":www.google.com QUIT\r\n", { { "name", "QUIT" }, { "servername", "www.google.com" } } },
+		{ true, "QUIT Bye\r\n", { { "name", "QUIT" }, { "params_count", 1 }, { "params[0]", "Bye" } } },
+		{ true, "QUIT 1 2 3 :4 5: 6\r\n", { { "name", "QUIT" }, { "params_count", 4 }, { "params[0]", "1" }, { "params[1]", "2" }, { "params[2]", "3" }, { "params[3]", "4 5: 6" } } },
 	}
 
-	for _case in cases {
+	for _case, index in cases {
 		info: bool
 		cmd, ok := parse(_case.msg)
 
@@ -366,8 +366,9 @@ test_parse :: proc(t: ^testing.T) {
 			if !testing.expect_value(t, val, part.val) do info = true
 		}
 		if info {
-			log.infof("Case %v", _case)
-			log.infof("Cmd  %v", cmd)
+			log.infof("Index %d", index)
+			log.infof("Case  %v", _case)
+			log.infof("Cmd   %v", cmd)
 		}
 	}
 	// testing.expect_value(t, parse(":"), "")

@@ -6,6 +6,7 @@ import "core:log"
 import "core:fmt"
 import "core:mem"
 import "core:net"
+import "base:runtime"
 import "core:strings"
 import "core:sys/posix"
 import "core:sync/chan"
@@ -216,6 +217,8 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 		}
 		context.allocator = mem.tracking_allocator(&track)
 	}
+	defer runtime.default_temp_allocator_destroy(auto_cast context.temp_allocator.data)
+
 	// TODO(XENOBAS): Accept destination of connection
 	chan.send(chan_res, "[DEBUG:IRC] Intializing...")
 
@@ -254,15 +257,12 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 			sb := strings.builder_make()
 			defer strings.builder_destroy(&sb)
 			for i in 0..<ATTEMPTS {
-				// chan.send(chan_res, "[DEBUG:IRC] \tframe read iteration")
 				ret := openssl.SSL_read_ex(conn.ssl_inst, raw_data(buff[:]), BUFFSZ, &n)
-				// chan.send(chan_res, "[DEBUG:IRC] \t\tframe read post read")
 				if ret == 1 {
 					strings.write_bytes(&sb, buff[:n])
 					continue
 				}
 				err := irc_retry(&conn, 0)
-				// chan.send(chan_res, "[DEBUG:IRC] \t\tframe read post retry")
 				if err == nil || err == .Want_X509_Lookup do break
 				else if err == .Zero_Return {
 					chan.send(chan_res, Response_Debug{
@@ -280,10 +280,11 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 			}
 
 			response := strings.to_string(sb)
+			if len(response) > 0 do log.infof("%q", response)
 			for line in strings.split_after_iterator(&response, "\r\n") {
-				// chan.send(chan_res, Response_Debug{ .Debug, fmt.tprintf("LINE: %q", line) })
 				cmd, ok := parse(line)
 				if !ok {
+					log.errorf("Parsing failure: %q", line)
 					chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("parse(%q)", strings.trim_space(line)) })
 					continue
 				}
@@ -299,11 +300,8 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 					if err := irc_command(&conn, .PONG, cmd.params[0]); err != nil {
 						resp.level = .Error
 						resp.message = fmt.tprintf("PONG to %s has failed: %v", cmd.params[0], err)
-					} else {
-						resp.level = .Debug
-						resp.message = fmt.tprintf("PONGed to %s successfully", cmd.params[0])
+						chan.send(chan_res, resp)
 					}
-					chan.send(chan_res, resp)
 				} else if cmd.name == "NOTICE" || cmd.name == "372" || cmd.name == "376" || cmd.name == "353" { // MOTD, END OF MOTD, NAMRPLY ?
 					if cmd.params_count != 2 do chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("%s with invalid params: %v", cmd.name, cmd.params[:cmd.params_count]) })
 					else do chan.send(chan_res, cast(Response_Text)fmt.tprintf(cmd.params[1]))
