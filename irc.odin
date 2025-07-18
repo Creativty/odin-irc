@@ -1,7 +1,3 @@
-/* TODO(XENOBAS):
- * Logging
- * Insecure connections
- */
 package main
 
 import "core:c"
@@ -211,6 +207,15 @@ Response_Debug :: struct {
 Response_Text :: distinct string
 
 irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Response, .Send)) {
+	when TRACK_ALLOC {
+		track: mem.Tracking_Allocator
+		mem.tracking_allocator_init(&track, context.allocator)
+		defer {
+			for _, leak in track.allocation_map do fmt.printfln("%v leaked %m", leak.location, leak.size)
+			mem.tracking_allocator_destroy(&track)
+		}
+		context.allocator = mem.tracking_allocator(&track)
+	}
 	// TODO(XENOBAS): Accept destination of connection
 	chan.send(chan_res, "[DEBUG:IRC] Intializing...")
 
@@ -223,7 +228,7 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 		// I don't know if this string works across thread memory boundaries or not.
 		chan.send(chan_res, Response_Debug{
 			level = .Fatal,
-			message = fmt.aprintf("Failed during dial because of: %v", err),
+			message = fmt.tprintf("Failed during dial because of: %v", err),
 		})
 		return
 	}
@@ -262,13 +267,13 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 				else if err == .Zero_Return {
 					chan.send(chan_res, Response_Debug{
 						level = .Error,
-						message = fmt.aprintf("Unexpected connection closed from remote host.", err),
+						message = fmt.tprintf("Unexpected connection closed from remote host.", err),
 					})
 					break loop
 				} else {
 					chan.send(chan_res, Response_Debug{
 						level = .Error,
-						message = fmt.aprintf("Failed during read: %v", err),
+						message = fmt.tprintf("Failed during read: %v", err),
 					})
 					break loop
 				}
@@ -276,44 +281,43 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 
 			response := strings.to_string(sb)
 			for line in strings.split_after_iterator(&response, "\r\n") {
-				// chan.send(chan_res, Response_Debug{ .Debug, fmt.aprintf("LINE: %q", line) })
+				// chan.send(chan_res, Response_Debug{ .Debug, fmt.tprintf("LINE: %q", line) })
 				cmd, ok := parse(line)
 				if !ok {
-					chan.send(chan_res, Response_Debug{ .Error, fmt.aprintf("parse(%q)", strings.trim_space(line)) })
+					chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("parse(%q)", strings.trim_space(line)) })
 					continue
 				}
 				if cmd.name == "PING" {
 					resp: Response_Debug
 					if cmd.params_count != 1 {
 						resp.level = .Fatal
-						resp.message = fmt.aprintf("Unimplemented params passed to PING %v", cmd.params[:cmd.params_count])
+						resp.message = fmt.tprintf("Unimplemented params passed to PING %v", cmd.params[:cmd.params_count])
 						chan.send(chan_res, resp)
 						continue
 					}
 
 					if err := irc_command(&conn, .PONG, cmd.params[0]); err != nil {
 						resp.level = .Error
-						resp.message = fmt.aprintf("PONG to %s has failed: %v", cmd.params[0], err)
+						resp.message = fmt.tprintf("PONG to %s has failed: %v", cmd.params[0], err)
 					} else {
 						resp.level = .Debug
-						resp.message = fmt.aprintf("PONGed to %s successfully", cmd.params[0])
+						resp.message = fmt.tprintf("PONGed to %s successfully", cmd.params[0])
 					}
 					chan.send(chan_res, resp)
 				} else if cmd.name == "NOTICE" || cmd.name == "372" || cmd.name == "376" || cmd.name == "353" { // MOTD, END OF MOTD, NAMRPLY ?
-					if cmd.params_count != 2 do chan.send(chan_res, Response_Debug{ .Error, fmt.aprintf("%s with invalid params: %v", cmd.name, cmd.params[:cmd.params_count]) })
-					else do chan.send(chan_res, cast(Response_Text)strings.clone(cmd.params[1]))
+					if cmd.params_count != 2 do chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("%s with invalid params: %v", cmd.name, cmd.params[:cmd.params_count]) })
+					else do chan.send(chan_res, cast(Response_Text)fmt.tprintf(cmd.params[1]))
 				} else {
-					chan.send(chan_res, Response_Debug{ .Warning, fmt.aprintf("Unrecognized: %q", line) })
+					chan.send(chan_res, Response_Debug{ .Warning, fmt.tprintf("Unrecognized: %q", line) })
 				}
 			}
-			if response != "" do chan.send(chan_res, Response_Debug{ .Debug, fmt.aprintf("Incomplete consumption: %s", response) })
+			if response != "" do chan.send(chan_res, Response_Debug{ .Debug, fmt.tprintf("Incomplete consumption: %s", response) })
 			for msg in chan.try_recv(chan_req) {
 				if err := irc_send(&conn, msg); err != nil {
-					chan.send(chan_res, Response_Debug{ .Error, fmt.aprintf("Sending %q failed: %v", msg, err) })
-				} else do chan.send(chan_res, Response_Debug{ .Debug, fmt.aprintf("Sent %q", msg) })
+					chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("Sending %q failed: %v", msg, err) })
+				} else do chan.send(chan_res, Response_Debug{ .Debug, fmt.tprintf("Sent %q", msg) })
 			}
 		}
-		free_all(context.temp_allocator)
 	}
 	chan.send(chan_res, "[DEBUG:IRC] thread done")
 }

@@ -4,11 +4,14 @@ import "core:thread"
 import "core:sync/chan"
 
 /* TODO(XENOBAS):
- * 1. Allocations are not being properly freed when transferring data over channels
  * 2. TermCL is slow so replace it, or is being used improperly so fix it
  * 3. Connection should be established via command (/connect ...), not on startup
  * 4. Client should have persistent data (NICK...)
+ * 5. IRC without secure layer
+ *    --Allocations are not being properly freed when transferring data over channels--
  */
+
+TRACK_ALLOC :: #config(TRACK_ALLOC, false)
 
 main :: proc() {
 	chan_req, err_req := chan.create(chan.Chan(string), 8, context.allocator)

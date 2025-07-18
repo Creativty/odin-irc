@@ -95,7 +95,7 @@ ui_draw :: proc(screen: ^termcl.Screen, tf: ^Text_Field, responses: []Response) 
 }
 
 ui_routine :: proc(chan_req: chan.Chan(string, .Send), chan_res: chan.Chan(Response, .Recv)) {
-	when false {
+	when TRACK_ALLOC {
 		track: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&track, context.allocator)
 		defer {
@@ -109,15 +109,16 @@ ui_routine :: proc(chan_req: chan.Chan(string, .Send), chan_res: chan.Chan(Respo
 	defer termcl.destroy_screen(&screen)
 	termcl.set_term_mode(&screen, .Cbreak)
 
-	termcl.hide_cursor(false)
-	fmt.print(ansi.CSI + "6 q")
-	defer fmt.print(ansi.CSI + "1 q")
-
-	tf, texts := text_field_make(), make([dynamic]string)
-	responses := make([dynamic]Response)
+	tf, responses := text_field_make(), make([dynamic]Response)
 	defer {
-		for text in texts do delete(text)
-		delete(texts)
+		for response in responses {
+			switch v in response {
+			case Response_Debug:
+				delete(v.message)
+			case Response_Text:
+				delete(cast(string)v)
+			}
+		}
 		delete(responses)
 		text_field_delete(&tf)
 	}
@@ -134,13 +135,10 @@ ui_routine :: proc(chan_req: chan.Chan(string, .Send), chan_res: chan.Chan(Respo
 		}
 
 		if response, ok := chan.try_recv(chan_res); ok {
-			append(&responses, response)
-			switch v in response {
-			case Response_Debug:
-				append(&texts, fmt.aprintf("[IRC:%v]: %s", v.level, v.message))
-			case Response_Text:
-				append(&texts, strings.clone(cast(string)v))
-			}
+			_clone := response
+			if v, ok := &_clone.(Response_Text); ok do v^ = cast(Response_Text)strings.clone(cast(string)v^)
+			else if v, ok := &_clone.(Response_Debug); ok do v.message = strings.clone(v.message)
+			append(&responses, _clone)
 			redraw = true
 		}
 
@@ -158,14 +156,15 @@ ui_routine :: proc(chan_req: chan.Chan(string, .Send), chan_res: chan.Chan(Respo
 						sentences := [?]string{ "I love eating toasted cheese and tuna sandwiches.", "He had a hidden stash underneath the floorboards in the back room of the house.", "Gary didn't understand why Doug went upstairs to get one dollar bills when he invited him to go cow tipping.", "There's no reason a hula hoop can't also be a circus ring.", "Of course, she loves her pink bunny slippers.", "The clock within this blog and the clock on my laptop are 1 hour different from each other.", "They throw cabbage that turns your brain into emotional baggage.", "She found it strange that people use their cellphones to actually talk to one another.", "As time wore on, simple dog commands turned into full paragraphs explaining why the dog couldn’t do something.", "Weather is not trivial - it's especially important when you're standing in it.", "He hated that he loved what she hated about hate.", "The light in his life was actually a fire burning all around him.", "Various sea birds are elegant, but nothing is as elegant as a gliding pelican.", "She insisted that cleaning out your closet was the key to good driving.", "Their argument could be heard across the parking lot.", "While all her friends were positive that Mary had a sixth sense, she knew she actually had a seventh sense."}
 						rand.shuffle(sentences[:])
 						length := rand.int_max(5) + 1
-						append(&texts, strings.join(sentences[:length], " "))
+						append(&responses, Response_Debug{ .Debug, strings.join(sentences[:length], " ") })
 					case "exit":
 						chan.close(chan_req)
 						break loop
+					case "":
 					case:
-						chan.send(chan_req, strings.concatenate({ text[1:], "\r\n" }))
+						chan.send(chan_req, fmt.tprintf("%s\r\n", text[1:]))
 					}
-				} else do append(&texts, strings.clone(text))
+				} else do append(&responses, Response_Debug{ .Error, fmt.aprintf("WIP Send message on current channel / conversion: %q", text) })
 				text_field_clear(&tf)
 			case .Arrow_Up:
 				if scroll < len(responses) do scroll += 1
