@@ -1,0 +1,3 @@
+[submodule "termcl"]
+	path = termcl
+	url = ./termcl/
