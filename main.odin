@@ -19,6 +19,7 @@ import "core:sync/chan"
  * 5. Client should have persistent data (NICK...)
  * 6. TermCL is slow so replace it, or is being used improperly so fix it
  * 7. IRC without OpenSSL secure layer
+ * 8. Add timestamps to messages
  */
 
 TRACK_ALLOC :: #config(TRACK_ALLOC, false)
