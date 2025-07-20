@@ -161,6 +161,23 @@ irc_send :: proc(conn: ^IRC_Connection, msg: string) -> (err: IRC_Error) {
 	return
 }
 
+irc_recv :: proc(conn: ^IRC_Connection, sb: ^strings.Builder) -> (read_n: uint, err: IRC_Error) {
+	n: c.size_t
+	buff: [mem.Kilobyte]u8
+	for {
+		ret := openssl.SSL_read_ex(conn.ssl_inst, raw_data(buff[:]), mem.Kilobyte, &n)
+		if ret == 1 {
+			read_n += n
+			strings.write_bytes(sb, buff[:n])
+			continue
+		}
+		err := irc_retry(conn, 0)
+		if err == nil || err == .Want_X509_Lookup do break
+		else do return n, err
+	}
+	return n, nil
+}
+
 irc_command :: proc(conn: ^IRC_Connection, cmd: IRC_Command_Kind, args: ..any) -> (err: IRC_Error) {
 	irc_fmt: string
 	#partial switch cmd {
@@ -240,80 +257,80 @@ irc_routine :: proc(chan_req: chan.Chan(string, .Recv), chan_res: chan.Chan(Resp
 
 	err = irc_connect(&conn, "XENOBAS")
 	if err != nil {
-		// mesg := fmt.tprintf("[DEBUG:IRC] Failed during connection because of: %v", err)
 		chan.send(chan_res, Response_Debug{ .Fatal, fmt.tprintf("Failed during user connection: %v", err) })
 		return
 	}
 	chan.send(chan_res, Response_Debug{ .Info, fmt.tprintf("Connected successfully") })
 
-	BUFFSZ :: mem.Kilobyte
-	ATTEMPTS :: 64
+	read_rem: string
 	loop: for {
 		if chan.is_closed(chan_req) do break
 		if conn.step == .Online {
-			// Read incoming messages from the server
-			n: c.size_t
-			buff: [BUFFSZ]u8
+			// Read data waiting in socket
 			sb := strings.builder_make()
 			defer strings.builder_destroy(&sb)
-			for i in 0..<ATTEMPTS {
-				ret := openssl.SSL_read_ex(conn.ssl_inst, raw_data(buff[:]), BUFFSZ, &n)
-				if ret == 1 {
-					strings.write_bytes(&sb, buff[:n])
-					continue
-				}
-				err := irc_retry(&conn, 0)
-				if err == nil || err == .Want_X509_Lookup do break
-				else if err == .Zero_Return {
-					chan.send(chan_res, Response_Debug{
-						level = .Error,
-						message = fmt.tprintf("Unexpected connection closed from remote host.", err),
-					})
-					break loop
-				} else {
-					chan.send(chan_res, Response_Debug{
-						level = .Error,
-						message = fmt.tprintf("Failed during read: %v", err),
-					})
-					break loop
-				}
+
+			if len(read_rem) > 0 {
+				strings.write_string(&sb, read_rem)
+				read_rem = ""
 			}
+			if n, err := irc_recv(&conn, &sb); err != nil {
+				chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("Could not receive bytes from remote host because of %v", err) })
+				break loop
+			} else if n == 0 do continue
 
 			response := strings.to_string(sb)
-			if len(response) > 0 do log.infof("%q", response)
 			for line in strings.split_after_iterator(&response, "\r\n") {
 				cmd, ok := parse(line)
-				if !ok {
-					log.errorf("Parsing failure: %q", line)
-					chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("parse(%q)", strings.trim_space(line)) })
-					continue
-				}
-				if cmd.name == "PING" {
+				if ok do switch cmd.name {
+				case "PING":
 					resp: Response_Debug
 					if cmd.params_count != 1 {
 						resp.level = .Fatal
 						resp.message = fmt.tprintf("Unimplemented params passed to PING %v", cmd.params[:cmd.params_count])
+
 						chan.send(chan_res, resp)
-						continue
+						break loop
 					}
 
 					if err := irc_command(&conn, .PONG, cmd.params[0]); err != nil {
 						resp.level = .Error
 						resp.message = fmt.tprintf("PONG to %s has failed: %v", cmd.params[0], err)
+
 						chan.send(chan_res, resp)
 					}
-				} else if cmd.name == "NOTICE" || cmd.name == "372" || cmd.name == "376" || cmd.name == "353" { // MOTD, END OF MOTD, NAMRPLY ?
-					if cmd.params_count != 2 do chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("%s with invalid params: %v", cmd.name, cmd.params[:cmd.params_count]) })
-					else do chan.send(chan_res, cast(Response_Text)fmt.tprintf(cmd.params[1]))
+				case "NOTICE", "PRIVMSG":
+					if cmd.params_count != 2 {
+						resp: Response_Debug
+						resp.level = .Error
+						resp.message = fmt.tprintf("Unexpected number of arguments passed to %s %v", cmd.name, cmd.params[:cmd.params_count])
+
+						chan.send(chan_res, resp)
+					}
+
+					resp := cast(Response_Text)strings.clone(cmd.params[1], context.temp_allocator)
+					chan.send(chan_res, resp)
+				case:
+					log.warnf("Unimplemented response %q", line)
 				} else {
-					chan.send(chan_res, Response_Debug{ .Warning, fmt.tprintf("Unrecognized: %q", line) })
+					log.errorf("Could not parse server message %q", line)
+					chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("Checkout logs for parsing error") })
 				}
+				// if cmd.name == "NOTICE" || cmd.name == "372" || cmd.name == "376" || cmd.name == "353" { // MOTD, END OF MOTD, NAMRPLY ?
+				// 	if cmd.params_count != 2 do chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("%s with invalid params: %v", cmd.name, cmd.params[:cmd.params_count]) })
+				// 	else do chan.send(chan_res, cast(Response_Text)fmt.tprintf(cmd.params[1]))
+				// } else {
+				// 	chan.send(chan_res, Response_Debug{ .Warning, fmt.tprintf("Unrecognized: %q", line) })
+				// }
 			}
-			if response != "" do chan.send(chan_res, Response_Debug{ .Debug, fmt.tprintf("Incomplete consumption: %s", response) })
+			if len(response) > 0 do read_rem = strings.clone(response, context.temp_allocator)
+
+			// Write data into socket
 			for msg in chan.try_recv(chan_req) {
-				if err := irc_send(&conn, msg); err != nil {
-					chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("Sending %q failed: %v", msg, err) })
-				} else do chan.send(chan_res, Response_Debug{ .Debug, fmt.tprintf("Sent %q", msg) })
+				err := irc_send(&conn, msg)
+				if err == nil do continue
+				chan.send(chan_res, Response_Debug{ .Error, fmt.tprintf("Socket write of %q failed because of %v", msg, err) })
+				if err == .Zero_Return do break loop
 			}
 		}
 	}

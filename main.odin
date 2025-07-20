@@ -9,8 +9,6 @@ import "core:sync/chan"
 
 /* TODO(XENOBAS):
  * 1. BUGS
-      - When the non blocking reading happens to split before a "\r\n", it fails parsing (BUG)
-        appears to be the last structural bug we will be seeing.
 	  - Scrolling must stop at last line to the top.
  * ----------------------------------------------------
  * 2. Connection should be established via command (/connect ...), not on startup
