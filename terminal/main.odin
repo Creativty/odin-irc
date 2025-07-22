@@ -58,12 +58,18 @@ main :: proc() {
 	defer terminal_destroy(terminal)
 	terminal_reset_style(terminal)
 
-	terminal_tick(terminal)
-	terminal_clear(terminal, .All)
-	draw_tabs(terminal, []string{ "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin",  "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin"})
-	terminal_set_cursor_pos(terminal, { 1, 2 })
+	timestamp := time.now()
+	for time.since(timestamp) < time.Millisecond * 2_500 {
+		terminal_tick(terminal)
+		terminal_clear(terminal, .All)
+		draw_tabs(terminal, []string{ "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin",  "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin"})
 
-	terminal_blit(terminal)
+		terminal_set_cursor_pos(terminal, { 1, 2 })
+		text := fmt.tprintf("Buffer: %q\nEncoding: %v\n", terminal.debug_buff[:terminal.debug_len], terminal.encoding)
+		terminal_write(terminal, text)
 
-	time.sleep(time.Second * 3)
+		terminal_blit(terminal)
+
+		free_all(context.temp_allocator)
+	}
 }
