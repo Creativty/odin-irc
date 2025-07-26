@@ -5,15 +5,29 @@ import "core:os"
 import "core:fmt"
 import "core:mem"
 import "core:time"
+import "../ecma48"
 import "../termcl"
+import "core:slice"
 import "core:strings"
 import "core:sys/posix"
 import "core:terminal/ansi"
+import "core:container/small_array"
+
+/* References:
+ * XTerm (VT*): https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+ * VT100      : https://vt100.net/docs/vt100-ug/chapter3.html
+ * Kitty KP   : https://sw.kovidgoyal.net/kitty/keyboard-protocol
+ */
 
 Terminal_Encoding :: enum {
 	Legacy = 0,
 	XTerm,
 	Kitty,
+}
+
+Input_Entry :: union {
+	byte,
+	ecma48.Control_Sequence,
 }
 
 Terminal :: struct {
@@ -22,14 +36,10 @@ Terminal :: struct {
 	state: Terminal_State,
 	timeout: int,
 
+	buff: [mem.Kilobyte]byte,
+	inputs: small_array.Small_Array(256, Input_Entry),
 	encoding: Terminal_Encoding,
 	decoders: [Terminal_Encoding]Terminal_Decoder,
-
-	last_n: int,
-	last_char: rune,
-
-	debug_len: int,
-	debug_buff: [512]u8,
 }
 
 Terminal_Decoder :: #type proc(terminal: ^Terminal, buff: []u8)
@@ -47,10 +57,10 @@ _terminal_query_state :: proc() -> (state: Terminal_State, ok: bool) {
 }
 
 _terminal_enter :: proc(terminal: ^Terminal) {
-	// TODO(XENOBAS): Support more modes.
-	KITTY_QUERY     :: "?u"
-	XTERM_QUERY     :: "c"
-	ALTERNATE_ENTER :: "?1049h"
+	KITTY_QUERY				:: "?u"
+	XTERM_QUERY				:: "c"
+	ALTERNATE_ENTER 		:: "?1049h"
+	BRACKETED_PASTE_ENTER	:: "?2004h"
 
 	state, ok := _terminal_query_state()
 	assert(ok, "could not query terminal state for setting its mode")
@@ -61,7 +71,7 @@ _terminal_enter :: proc(terminal: ^Terminal) {
 	assert(retval == .OK, "could not set terminal state")
 	os.flush(os.stdin)
 
-	os.write(os.stdout, transmute([]u8)string(ansi.CSI + ALTERNATE_ENTER + ansi.CSI + KITTY_QUERY + ansi.CSI + XTERM_QUERY))
+	os.write(os.stdout, transmute([]u8)string(ansi.CSI + ALTERNATE_ENTER + ansi.CSI + BRACKETED_PASTE_ENTER + ansi.CSI + KITTY_QUERY + ansi.CSI + XTERM_QUERY))
 	os.flush(os.stdout)
 }
 
@@ -74,87 +84,80 @@ _terminal_leave :: proc(terminal: ^Terminal) {
 
 	KITTY_LEAVE     :: "<u"
 	XTERM_LEAVE     :: ">4;0m"
+	BRACKETED_PASTE_LEAVE :: "?2004l"
 	ALTERNATE_LEAVE :: "?1049l"
 	switch terminal.encoding {
 	case .Kitty:
 		os.write(os.stdout, transmute([]u8)string(ansi.CSI + KITTY_LEAVE))
 	case .XTerm:
-		os.write(os.stdout, transmute([]u8)string(ansi.CSI + XTERM_LEAVE))
+		os.write(os.stdout, transmute([]u8)string(ansi.CSI + BRACKETED_PASTE_LEAVE + ansi.CSI + XTERM_LEAVE))
 	case .Legacy:
 	}
 	os.write(os.stdout, transmute([]u8)string(ansi.CSI + ALTERNATE_LEAVE))
 	os.flush(os.stdout)
 }
 
-@(private)
-Reader :: struct {
-	buff: []u8,
-	index: int,
-}
-
-@(private)
-read_letter :: proc(r: ^Reader, t: ^Terminal) -> (c: u8, ok: bool) {
-	if r.index >= len(r.buff) do return 0, false
-	c = r.buff[r.index]
-	t.debug_buff[t.debug_len] = c
-	t.debug_len += 1
-	r.index += 1
-	return c, true
-}
-
 _terminal_decode_legacy :: proc(terminal: ^Terminal, buff: []u8) {
-	reader := Reader{ buff, 0 }
-	for {
-		c := read_letter(&reader, terminal) or_break
-		if c == '\e' {
-			c = read_letter(&reader, terminal) or_break
-			if c != '[' do continue
-			c = read_letter(&reader, terminal) or_break
-			if c != '?' do continue
-			c = read_letter(&reader, terminal) or_break
-			if c < '0' || c > '9' do continue
-			c = read_letter(&reader, terminal) or_break
-			if c == 'u' && terminal.encoding == .Legacy {
-				terminal.encoding = .Kitty
-
+	buff := buff
+	for len(buff) > 0 {
+		seq, is_control_sequence := ecma48.scan(transmute(string)buff)
+		if is_control_sequence {
+			buff = buff[len(seq.text):]
+			if seq.id == 'u' && seq.initial == '?' {
 				KITTY_ENTER     : string : ">3u"
 				os.write(os.stdout, transmute([]u8)(ansi.CSI + KITTY_ENTER))
 				os.flush(os.stdout)
-				break
-			}
-			if c != ';' do continue
-			c = read_letter(&reader, terminal) or_break
-			if c < '0' || c > '9' do continue
-			c = read_letter(&reader, terminal) or_break
-			if c == 'c' && terminal.encoding == .Legacy {
-				terminal.encoding = .XTerm
 
+				terminal.encoding = .Kitty
+				_terminal_decode_kitty(terminal, buff)
+				return
+			}
+			if seq.id == 'c' && seq.initial == '?' {
 				XTERM_ENTER     : string : ">4;2m"
 				os.write(os.stdout, transmute([]u8)(ansi.CSI + XTERM_ENTER))
 				os.flush(os.stdout)
-				break
+
+				terminal.encoding = .XTerm
+				_terminal_decode_xterm(terminal, buff)
+				return
 			}
+			small_array.push_back(&terminal.inputs, seq)
+		} else {
+			ch := buff[0]
+			buff = buff[1:]
+			small_array.push_back(&terminal.inputs, ch)
 		}
 	}
 }
 
 _terminal_decode_kitty :: proc(terminal: ^Terminal, buff: []u8) {
-	reader := Reader{ buff, 0 }
-	for {
-		read_letter(&reader, terminal) or_break
+	buff := buff
+	for len(buff) > 0 {
+		ch := buff[0]
+		buff = buff[1:]
+		small_array.push_back(&terminal.inputs, ch)
 	}
 }
 
 _terminal_decode_xterm :: proc(terminal: ^Terminal, buff: []u8) {
-	reader := Reader{ buff, 0 }
-	for {
-		read_letter(&reader, terminal) or_break
+	buff := buff
+	for len(buff) > 0 {
+		seq, is_control_sequence := ecma48.scan(transmute(string)buff)
+		if is_control_sequence {
+			buff = buff[len(seq.text):]
+			small_array.push_back(&terminal.inputs, seq)
+		} else {
+			ch := buff[0]
+			buff = buff[1:]
+			small_array.push_back(&terminal.inputs, ch)
+		}
 	}
 }
 
 terminal_make :: proc() -> (terminal: ^Terminal) {
 	terminal = new(Terminal)
 	terminal.builder = strings.builder_make()
+
 	terminal.timeout = 10
 	terminal.decoders[.Kitty] = _terminal_decode_kitty
 	terminal.decoders[.XTerm] = _terminal_decode_xterm
@@ -188,17 +191,17 @@ terminal_blit :: proc(terminal: ^Terminal) {
 }
 
 terminal_tick :: proc(terminal: ^Terminal) {
+	slice.zero(terminal.buff[:])
+
 	size, ok := termcl.get_term_size_via_syscall()
 	if ok do terminal.dimensions = { cast(int)size.w, cast(int)size.h }
 
 	fd := posix.pollfd { fd = posix.STDIN_FILENO, events = { .IN } }
 	if posix.poll(&fd, 1, cast(c.int)terminal.timeout) > 0 {
-		buff: [mem.Kilobyte]byte
-		n, err := os.read(os.stdin, buff[:])
+		n, err := os.read(os.stdin, terminal.buff[:])
 		assert(err == nil, "read syscall has failed while querying input")
 
-		terminal.last_n = cast(int)n
-		terminal.decoders[terminal.encoding](terminal, buff[:n])
+		terminal.decoders[terminal.encoding](terminal, terminal.buff[:n])
 	}
 }
 

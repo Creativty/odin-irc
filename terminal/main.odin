@@ -5,9 +5,16 @@ import "core:fmt"
 import "core:mem"
 import "core:time"
 import "../termcl"
+import "../ecma48"
 import "core:strings"
 import "core:sys/posix"
 import "core:terminal/ansi"
+import "core:container/small_array"
+
+/* TODO(XENOBAS):
+ * - Control Functions parser
+ * - Input reading
+ */
 
 draw_tabs :: proc(terminal: ^Terminal, tabs: []string) {
 	fg, bg: termcl.RGB_Color
@@ -47,29 +54,34 @@ draw_tabs :: proc(terminal: ^Terminal, tabs: []string) {
 	terminal_reset_style(terminal)
 }
 
-/* TODO(XENOBAS): A propos keyboard handling
- * We'll have to do protocol negotiation at terminal instance start
- * and try to accomodate depending on the available protocol (Kitty, Legacy)
- * The major issue is... Eventually we will want to support XTerm.
- */
-
 main :: proc() {
 	terminal := terminal_make()
 	defer terminal_destroy(terminal)
 	terminal_reset_style(terminal)
 
-	timestamp := time.now()
-	for time.since(timestamp) < time.Millisecond * 2_500 {
+	must_quit: bool
+	for !must_quit {
 		terminal_tick(terminal)
 		terminal_clear(terminal, .All)
 		draw_tabs(terminal, []string{ "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin",  "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin", "#hackint", "@XENOBAS", "#odin"})
 
 		terminal_set_cursor_pos(terminal, { 1, 2 })
-		text := fmt.tprintf("Buffer: %q\nEncoding: %v\n", terminal.debug_buff[:terminal.debug_len], terminal.encoding)
-		terminal_write(terminal, text)
+		for input, index in small_array.slice(&terminal.inputs) {
+			text: string
+			switch v in input {
+			case byte:
+					 if v == '\n' do text = fmt.tprintf("Character '\\n'\n")
+				else if v == '\e' do text = fmt.tprintf("Character '\\e'\n")
+							 else do text = fmt.tprintf("Character '%c'\n", v)
+				if v == 'q' do must_quit = true
+			case ecma48.Control_Sequence:
+				text = fmt.tprintf("Sequence  %v\n", v)
+			}
+			terminal_write(terminal, text)
+		}
+		terminal_write(terminal, fmt.tprintf("Encoding: %v", terminal.encoding))
 
 		terminal_blit(terminal)
-
 		free_all(context.temp_allocator)
 	}
 }
